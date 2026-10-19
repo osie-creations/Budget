@@ -248,16 +248,26 @@ function readStatement(text){
   for(i=0;i<Math.min(rows.length,10);i++){var l=rows[i].map(fold); if(find(l,HDR.date)>=0&&(find(l,HDR.desc)>=0||find(l,HDR.amount)>=0||find(l,HDR.debit)>=0)&&!rows[i].some(function(c){return dateParts(c)})){hi=i;H=l;break}}
   var cD,cN,cDeb=-1,cCr=-1,cAmt=-1,cType=-1,cCat=-1,start;
   if(H){ cD=find(H,HDR.dateTx); if(cD<0) cD=find(H,HDR.date); cCat=find(H,HDR.cat); cType=find(H,HDR.type,[cCat]); cN=find(H,HDR.desc,[cD]);
-    cDeb=find(H,HDR.debit,[cD,cN,cCat,cType]); cCr=find(H,HDR.credit,[cD,cN,cCat,cType,cDeb]); cAmt=find(H,HDR.amount,[cD,cN,cCat,cType]); start=hi+1 }
+    cDeb=find(H,HDR.debit,[cD,cN,cCat,cType]); cCr=find(H,HDR.credit,[cD,cN,cCat,cType,cDeb]); cAmt=find(H,HDR.amount,[cD,cN,cCat,cType]); start=hi+1;
+    [cDeb,cCr,cAmt].forEach(function(cc,ix){ if(cc<0) return; var dn=0,n=0; for(var q=start;q<Math.min(rows.length,start+30);q++){var v=(rows[q][cc]||'').trim(); if(v){n++; if(dateParts(v)) dn++}} if(n&&dn>=n*0.6){ if(ix===0)cDeb=-1; else if(ix===1)cCr=-1; else cAmt=-1 } }) }
   else { /* no header row: work the columns out from what is in them */
-    var sample=rows.slice(0,40),w=Math.max.apply(null,sample.map(function(r){return r.length})),best={d:-1,a:-1,n:-1},dScore=0,aScore=0,nScore=0;
-    for(var c=0;c<w;c++){ var dn=0,an=0,txt=0; sample.forEach(function(r){var v=r[c]; if(dateParts(v)) dn++; else if(money(v)!=null&&!/[a-z]/i.test(v||'')) an++; txt+=((v||'').match(/[a-z]/gi)||[]).length});
-      if(dn>dScore){dScore=dn;best.d=c} }
-    for(c=0;c<w;c++){ if(c===best.d) continue; var an2=0,tx2=0; sample.forEach(function(r){var v=r[c]; if(money(v)!=null&&!/[a-z]/i.test(v||'')) an2++; tx2+=((v||'').match(/[a-z]/gi)||[]).length});
-      if(an2>aScore){aScore=an2;best.a=c} if(tx2>nScore){nScore=tx2;best.n=c} }
-    if(dScore<sample.length*0.5||best.a<0||best.n<0||best.n===best.a){
-      return {error:"Couldn't tell which columns hold the date, description and amount. The file's first line reads: "+rows[0].join(' | ').slice(0,120)} }
-    cD=best.d; cN=best.n; cAmt=best.a; start=0 }
+    var sample=rows.slice(0,60),w=Math.max.apply(null,sample.map(function(r){return r.length})),info=[];
+    for(var c=0;c<w;c++){ var ne=0,dn=0,num=0,dec=0,letters=0,seenV={},filled=[];
+      sample.forEach(function(r,ri){ var v=(r[c]||'').trim(); if(!v) return; ne++; filled.push(ri); seenV[v]=1; letters+=(v.match(/[a-z]/gi)||[]).length;
+        if(dateParts(v)) dn++; else if(money(v)!=null&&!/[a-z]/i.test(v)){num++; if(/[.,]\d{2}\)?$/.test(v)) dec++} });
+      info.push({c:c,ne:ne,date:ne&&dn>=ne*0.6,num:num,dec:dec,distinct:Object.keys(seenV).length,letters:ne?letters/ne:0,filled:filled}) }
+    var dates=info.filter(function(x){return x.date}); if(!dates.length) return {error:"Couldn't find a date column. The file's first line reads: "+rows[0].join(' | ').slice(0,120)};
+    cD=dates[0].c;
+    var money_=info.filter(function(x){return !x.date&&x.num>0&&x.num>=x.ne*0.8&&x.dec>0}).sort(function(x,y){return y.dec-x.dec||y.num-x.num});
+    if(!money_.length) money_=info.filter(function(x){return !x.date&&x.num>0&&x.num>=x.ne*0.8&&x.distinct>2}).sort(function(x,y){return y.num-x.num});
+    if(!money_.length) return {error:"Couldn't find an amount column. The file's first line reads: "+rows[0].join(' | ').slice(0,120)};
+    /* two partly filled money columns that rarely overlap are charges and credits */
+    var pair=null; for(var x1=0;x1<money_.length&&!pair;x1++) for(var x2=x1+1;x2<money_.length;x2++){ var A=money_[x1],B=money_[x2],ov=A.filled.filter(function(r){return B.filled.indexOf(r)>=0}).length;
+      if(ov<=Math.min(A.ne,B.ne)*0.1&&A.ne<sample.length*0.95&&A.ne+B.ne>=sample.length*0.6){pair=A.c<B.c?[A.c,B.c]:[B.c,A.c];break} }
+    if(pair){cDeb=pair[0];cCr=pair[1]} else cAmt=money_[0].c;
+    var textCols=info.filter(function(x){return !x.date&&x.c!==cDeb&&x.c!==cCr&&x.c!==cAmt&&x.letters>0}).sort(function(x,y){return (y.letters*Math.min(y.distinct,30))-(x.letters*Math.min(x.distinct,30))});
+    if(!textCols.length) return {error:"Couldn't find a description column. The file's first line reads: "+rows[0].join(' | ').slice(0,120)};
+    cN=textCols[0].c; start=0 }
   if(cD<0||cN<0) return {error:"Couldn't find the date and description columns. The file's first line reads: "+rows[hi<0?0:hi].join(' | ').slice(0,120)};
   if(cDeb<0&&cAmt<0) return {error:"Couldn't find an amount column. The file's first line reads: "+rows[hi].join(' | ').slice(0,120)};
   var dayFirst=false,mdSeen=false; for(i=start;i<rows.length;i++){var p=dateParts(rows[i][cD]); if(p&&!p.iso){ if(p.a>12) dayFirst=true; if(p.b>12) mdSeen=true }}
@@ -272,6 +282,7 @@ function readStatement(text){
     var cc=cCat>=0?(R[cCat]||'').trim():'';
     var pay=a<0&&(/payment|pago/i.test(fold(cc))||/\b(pymt|payment|autopay|pago)\b/i.test(fold(n)));
     out.push({d:d,n:n,a:round2(a),cc:cc,pay:pay}) }
+  if(out.length&&out.filter(function(x){return Math.abs(x.a)>=100000}).length>out.length/2) return {error:"Those amounts look wrong (over US$100,000 each), so nothing was added. The file's first line reads: "+rows[hi<0?0:hi].join(' | ').slice(0,120)};
   if(!out.length) return {error:"Found the columns but no charges could be read. The file's first line reads: "+rows[hi<0?0:hi].join(' | ').slice(0,120)};
   return {rows:out,bad:bad} }
 function hash(s){var h=5381;for(var i=0;i<s.length;i++) h=((h<<5)+h+s.charCodeAt(i))>>>0; return h.toString(36)}
@@ -496,7 +507,8 @@ function viewReview(){ var pend=pending(TX),h='<div class="row spread"><button c
   if(!pend.length) return h+'<section class="plate riv"><h2>All sorted</h2><p class="muted" style="margin-top:6px">Every charge has a category. Upload a new file whenever you want to catch up.</p></section>';
   var ready=pend.filter(function(p){return ui.picks[p.id]||p.t.s}).length;
   h+='<section class="plate riv"><div class="row spread"><div><h2>'+pend.length+' charge'+(pend.length===1?'':'s')+' to sort</h2><p class="muted small">Check each suggested category. Your choice is remembered for that shop next time.</p></div>'
-    +(ready?'<button class="btn primary" data-act="confirm-all">Confirm all '+ready+' suggestions</button>':'')+'</div>'+(ui.err?'<p class="err" style="margin-top:8px">'+esc(ui.err)+'</p>':'')+'<div class="list" style="margin-top:10px">';
+    +'<div class="row">'+(ready?'<button class="btn primary" data-act="confirm-all">Confirm all '+ready+' suggestions</button>':'')+'<button class="btn sm quiet" data-act="clear-pending">Remove all unsorted</button></div></div>'
+    +(ui.clearAsk?'<div class="spbox" style="margin-top:12px"><p style="font-weight:700">Remove all '+pend.length+' unsorted charges? Charges you already confirmed stay. You can upload the file again afterwards.</p><div class="row" style="margin-top:10px"><button class="btn sm primary" data-act="clear-yes">Remove them</button><button class="btn sm quiet" data-act="clear-no">Cancel</button></div></div>':'')+(ui.err?'<p class="err" style="margin-top:8px">'+esc(ui.err)+'</p>':'')+'<div class="list" style="margin-top:10px">';
   pend.forEach(function(p){ var t=p.t,sel=ui.picks[p.id]||t.s||'';
     h+='<div class="li"><span class="what"><strong>'+esc(t.n)+'</strong><br><span class="muted small">'+dLabel(t.d)+(t.a<0?' &middot; refund':'')+(t.src==='sample'?' &middot; sample':'')+'</span></span><span class="amt">'+usd(t.a)+'</span>'
       +'<select id="pick-'+esc(p.id)+'" data-ch="pick" data-id="'+esc(p.id)+'" aria-label="Category for '+esc(t.n)+'">'+catOptions(sel,!sel)+'</select>'
@@ -584,6 +596,10 @@ function clearSample(){ for(var ym in TX){var ch=false; for(var id in TX[ym]) if
 
 document.addEventListener('click',function(ev){ var b=ev.target.closest('[data-act]'); if(!b) return; var a=b.dataset.act,d=b.dataset;
   if(a==='cover'){closeCover();return}
+  if(a==='clear-pending'){ui.clearAsk=true;render();return}
+  if(a==='clear-no'){ui.clearAsk=false;render();return}
+  if(a==='clear-yes'){ var gone=[],ms={}; pending(TX).forEach(function(p){gone.push([p.ym,p.id,p.t]); delete TX[p.ym][p.id]; ms[p.ym]=1}); Object.keys(ms).forEach(saveMonth); ui.clearAsk=false; ui.picks={}; ui.sp=null; render();
+    toast(gone.length+' unsorted charges removed',function(){ gone.forEach(function(g){TX[g[0]]=TX[g[0]]||{}; TX[g[0]][g[1]]=g[2]; ms[g[0]]=1}); Object.keys(ms).forEach(saveMonth); render() }); return }
   if(a==='backup'){doBackup();return}
   if(a==='restore'){$('restore-file').value='';$('restore-file').click();return}
   if(a==='restore-yes'){applyRestore();return}
