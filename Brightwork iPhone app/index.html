@@ -211,39 +211,68 @@ function freshSettings(){ var s={cats:[],defaults:{},overrides:{},rules:{},items
 function norm(s){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,'')}
 function itemMatch(desc,name){var k=norm(name); return k.length>=3&&norm(desc).indexOf(k)>=0}
 function round2(n){return Math.round(n*100)/100}
-function parseCSV(text){
-  var rows=[],row=[],cur='',q=false;text=text.replace(/^﻿/,'');
+function parseCSV(text,delim){
+  text=String(text).replace(/^﻿/,'');
+  if(!delim){ var head=text.split(/\r?\n/).slice(0,6).join('\n'),sc=(head.match(/;/g)||[]).length,cm=(head.match(/,/g)||[]).length,tb=(head.match(/\t/g)||[]).length; delim=tb>sc&&tb>cm?'\t':sc>cm?';':',' }
+  var rows=[],row=[],cur='',q=false;
   for(var i=0;i<text.length;i++){var ch=text[i];
     if(q){ if(ch==='"'){ if(text[i+1]==='"'){cur+='"';i++} else q=false } else cur+=ch }
     else if(ch==='"') q=true;
-    else if(ch===','){row.push(cur);cur=''}
+    else if(ch===delim){row.push(cur);cur=''}
     else if(ch==='\n'||ch==='\r'){ if(ch==='\r'&&text[i+1]==='\n') i++; row.push(cur);cur=''; if(row.some(function(c){return c.trim()!==''})) rows.push(row); row=[] }
     else cur+=ch }
   row.push(cur); if(row.some(function(c){return c.trim()!==''})) rows.push(row);
   return rows }
-function isoDate(s){ s=(s||'').trim(); var m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if(m) return m[1]+'-'+pad(m[2])+'-'+pad(m[3]);
-  m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if(m){var y=m[3].length===2?'20'+m[3]:m[3]; return y+'-'+pad(m[1])+'-'+pad(m[2])} return null }
+function fold(s){return String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim()}
+var MONTHS={jan:1,ene:1,feb:2,mar:3,apr:4,abr:4,may:5,jun:6,jul:7,aug:8,ago:8,sep:9,set:9,oct:10,nov:11,dec:12,dic:12};
+function dateParts(s){ s=String(s==null?'':s).trim(); var f=fold(s),m=s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/); if(m) return {iso:m[1]+'-'+pad(m[2])+'-'+pad(m[3])};
+  m=s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?!\d)/); if(m) return {a:+m[1],b:+m[2],y:m[3].length===2?'20'+m[3]:m[3]};
+  m=f.match(/^(\d{1,2})(?: de)?[ -]([a-z]{3})[a-z]*\.?(?: de)?[ ,-]+(\d{4})/); if(m&&MONTHS[m[2]]) return {iso:m[3]+'-'+pad(MONTHS[m[2]])+'-'+pad(m[1])};
+  m=f.match(/^([a-z]{3})[a-z]*\.? (\d{1,2}),? (\d{4})/); if(m&&MONTHS[m[1]]) return {iso:m[3]+'-'+pad(MONTHS[m[1]])+'-'+pad(m[2])};
+  return null }
+function isoDate(s,dayFirst){ var p=dateParts(s); if(!p) return null; if(p.iso) return p.iso; var mo=dayFirst?p.b:p.a,d=dayFirst?p.a:p.b; if(mo<1||mo>12||d<1||d>31) return null; return p.y+'-'+pad(mo)+'-'+pad(d) }
 function pad(n){return String(n).padStart(2,'0')}
-function money(s){ s=String(s||'').trim(); if(!s) return null; var neg=/^\(.*\)$/.test(s)||/^-/.test(s); var n=parseFloat(s.replace(/[^0-9.]/g,'')); if(isNaN(n)) return null; return neg?-n:n }
-/* Turns a bank download into rows {d,n,a,cc,pay}. a>0 is a charge, a<0 a refund. */
+function money(s){ s=String(s==null?'':s).trim(); if(!s) return null; var bare=s.replace(/[$\s]|USD/g,''),neg=/^\(.*\)$/.test(bare)||/^-|-$/.test(bare);
+  var t=bare.replace(/[^0-9.,]/g,''); if(!/\d/.test(t)) return null; var lc=t.lastIndexOf(','),ld=t.lastIndexOf('.');
+  if(lc>ld&&t.length-lc-1<=2) t=t.replace(/\./g,'').replace(',','.'); else t=t.replace(/,/g,'');
+  var n=parseFloat(t); if(isNaN(n)) return null; return neg?-n:n }
+var HDR={dateTx:['transaction date','fecha de transaccion','fecha de la transaccion','fecha de operacion','fecha de compra','trans date','trans. date'],
+  date:['date','fecha'],desc:['description','descripcion','payee','merchant','comercio','concepto','detalle','beneficiario','establecimiento'],
+  debit:['debit','debito','cargo','retiro'],credit:['credit','credito','abono','deposito'],amount:['amount','monto','importe','cantidad','valor'],
+  type:['type','tipo'],cat:['category','categoria']};
+/* Turns a bank download into rows {d,n,a,cc,pay}. a>0 is a charge, a<0 a refund. Reads English or Spanish headers, comma or semicolon files. */
 function readStatement(text){
-  var rows=parseCSV(text); if(rows.length<2) return {error:"That file doesn't have any rows. Download the CSV version from Capital One and try again."};
-  var hi=-1,H; for(var i=0;i<Math.min(rows.length,8);i++){var l=rows[i].map(function(c){return c.trim().toLowerCase()}); if(l.some(function(c){return c.indexOf('date')>=0})&&l.some(function(c){return c.indexOf('description')>=0||c==='payee'||c==='merchant'})){hi=i;H=l;break} }
-  if(hi<0) return {error:"Couldn't find the date and description columns. Use the CSV download from Capital One's transactions page."};
-  function col(){for(var a=0;a<arguments.length;a++){var k=H.indexOf(arguments[a]); if(k>=0) return k} return -1}
-  function has(s){for(var k=0;k<H.length;k++) if(H[k].indexOf(s)>=0) return k; return -1}
-  var cD=col('transaction date','date','posted date'); if(cD<0) cD=has('date');
-  var cN=col('description','transaction description','payee','merchant'); if(cN<0) cN=has('description');
-  var cDeb=col('debit'),cCr=col('credit'),cAmt=col('transaction amount','amount'),cType=col('transaction type','type'),cCat=col('category');
-  if(cDeb<0&&cAmt<0) return {error:"Couldn't find an amount column in that file."};
+  var rows=parseCSV(text); if(!rows.length) return {error:"That file is empty. Download the CSV version from Capital One and try again."};
+  function find(H,keys,skip){for(var k=0;k<H.length;k++){ if(skip&&skip.indexOf(k)>=0) continue; for(var j=0;j<keys.length;j++) if(H[k]===keys[j]||H[k].indexOf(keys[j])>=0) return k} return -1}
+  var hi=-1,H=null,i;
+  for(i=0;i<Math.min(rows.length,10);i++){var l=rows[i].map(fold); if(find(l,HDR.date)>=0&&(find(l,HDR.desc)>=0||find(l,HDR.amount)>=0||find(l,HDR.debit)>=0)&&!rows[i].some(function(c){return dateParts(c)})){hi=i;H=l;break}}
+  var cD,cN,cDeb=-1,cCr=-1,cAmt=-1,cType=-1,cCat=-1,start;
+  if(H){ cD=find(H,HDR.dateTx); if(cD<0) cD=find(H,HDR.date); cCat=find(H,HDR.cat); cType=find(H,HDR.type,[cCat]); cN=find(H,HDR.desc,[cD]);
+    cDeb=find(H,HDR.debit,[cD,cN,cCat,cType]); cCr=find(H,HDR.credit,[cD,cN,cCat,cType,cDeb]); cAmt=find(H,HDR.amount,[cD,cN,cCat,cType]); start=hi+1 }
+  else { /* no header row: work the columns out from what is in them */
+    var sample=rows.slice(0,40),w=Math.max.apply(null,sample.map(function(r){return r.length})),best={d:-1,a:-1,n:-1},dScore=0,aScore=0,nScore=0;
+    for(var c=0;c<w;c++){ var dn=0,an=0,txt=0; sample.forEach(function(r){var v=r[c]; if(dateParts(v)) dn++; else if(money(v)!=null&&!/[a-z]/i.test(v||'')) an++; txt+=((v||'').match(/[a-z]/gi)||[]).length});
+      if(dn>dScore){dScore=dn;best.d=c} }
+    for(c=0;c<w;c++){ if(c===best.d) continue; var an2=0,tx2=0; sample.forEach(function(r){var v=r[c]; if(money(v)!=null&&!/[a-z]/i.test(v||'')) an2++; tx2+=((v||'').match(/[a-z]/gi)||[]).length});
+      if(an2>aScore){aScore=an2;best.a=c} if(tx2>nScore){nScore=tx2;best.n=c} }
+    if(dScore<sample.length*0.5||best.a<0||best.n<0||best.n===best.a){
+      return {error:"Couldn't tell which columns hold the date, description and amount. The file's first line reads: "+rows[0].join(' | ').slice(0,120)} }
+    cD=best.d; cN=best.n; cAmt=best.a; start=0 }
+  if(cD<0||cN<0) return {error:"Couldn't find the date and description columns. The file's first line reads: "+rows[hi<0?0:hi].join(' | ').slice(0,120)};
+  if(cDeb<0&&cAmt<0) return {error:"Couldn't find an amount column. The file's first line reads: "+rows[hi].join(' | ').slice(0,120)};
+  var dayFirst=false,mdSeen=false; for(i=start;i<rows.length;i++){var p=dateParts(rows[i][cD]); if(p&&!p.iso){ if(p.a>12) dayFirst=true; if(p.b>12) mdSeen=true }}
+  if(!dayFirst&&!mdSeen&&H&&/fecha/.test(H[cD])) dayFirst=true;
+  /* one amount column, no type: if most amounts are negative, the file shows charges as negatives */
+  var flip=false; if(cDeb<0&&cType<0){var ng=0,ps=0; for(i=start;i<rows.length;i++){var mv=money(rows[i][cAmt]); if(mv<0) ng++; else if(mv>0) ps++} flip=ng>ps}
   var out=[],bad=0;
-  for(var r=hi+1;r<rows.length;r++){var R=rows[r],d=isoDate(R[cD]),n=(R[cN]||'').replace(/\s+/g,' ').trim(),a=null;
+  for(var r=start;r<rows.length;r++){var R=rows[r],d=isoDate(R[cD],dayFirst),n=(R[cN]||'').replace(/\s+/g,' ').trim(),a=null;
     if(cDeb>=0){var db=money(R[cDeb]),cr=cCr>=0?money(R[cCr]):null; if(db!=null&&db!==0) a=Math.abs(db); else if(cr!=null&&cr!==0) a=-Math.abs(cr)}
-    else {var v=money(R[cAmt]); if(v!=null){ if(cType>=0){a=/credit|deposit/i.test(R[cType]||'')?-Math.abs(v):Math.abs(v)} else a=v } }
+    else {var v=money(R[cAmt]); if(v!=null){ if(cType>=0&&(R[cType]||'').trim()){a=/credit|deposit|abono/i.test(fold(R[cType]))?-Math.abs(v):Math.abs(v)} else a=flip?-v:v } }
     if(!d||!n||a==null||a===0){bad++;continue}
     var cc=cCat>=0?(R[cCat]||'').trim():'';
-    var pay=a<0&&(/payment/i.test(cc)||/\b(pymt|payment|autopay)\b/i.test(n));
+    var pay=a<0&&(/payment|pago/i.test(fold(cc))||/\b(pymt|payment|autopay|pago)\b/i.test(fold(n)));
     out.push({d:d,n:n,a:round2(a),cc:cc,pay:pay}) }
+  if(!out.length) return {error:"Found the columns but no charges could be read. The file's first line reads: "+rows[hi<0?0:hi].join(' | ').slice(0,120)};
   return {rows:out,bad:bad} }
 function hash(s){var h=5381;for(var i=0;i<s.length;i++) h=((h<<5)+h+s.charCodeAt(i))>>>0; return h.toString(36)}
 function merchantKey(n){return n.toUpperCase().replace(/[^A-Z ]+/g,' ').trim().split(/\s+/).slice(0,2).join(' ')}
@@ -532,7 +561,10 @@ function saveBudget(){ var d=ui.draft,names={},vals={},i;
   if(d.scope==='every'){S.defaults=vals; delete S.overrides[ui.ym]} else S.overrides[ui.ym]=vals;
   S.sampleBudgets=false; saveSettings(); Object.keys(touched).forEach(saveMonth);
   ui.view='dash';ui.draft=null;ui.err=''; render(); toast(d.scope==='every'?'Budgets saved for every month':'Budgets saved for '+ymLabel(ui.ym)) }
-function handleFile(file){ if(!file) return; var fr=new FileReader();
+function handleFile(file){ if(!file) return;
+  if(/^image\//.test(file.type)||/\.(png|jpe?g|heic|gif|webp)$/i.test(file.name)){toast("That's a picture. Upload the CSV file from Capital One's Download transactions button instead.");return}
+  if(/\.(pdf|xlsx?|numbers|docx?)$/i.test(file.name)){toast("That file type can't be read. Choose CSV when you download transactions from Capital One.");return}
+  var fr=new FileReader();
   fr.onerror=function(){toast("That file couldn't be read. Try downloading it again.")};
   fr.onload=function(){ var res=readStatement(String(fr.result)); if(res.error){toast(res.error);return}
     var out=importRows(S,TX,res.rows); out.months.forEach(saveMonth);
