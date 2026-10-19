@@ -286,21 +286,21 @@ function suggest(S,n,cc){ var ids={}; S.cats.forEach(function(c){ids[c.id]=1});
   return null }
 /* Adds new rows to TX (object of month -> items). Returns counts and the months it touched. */
 /* Charges added by hand on the card, not yet matched to a downloaded charge, grouped (a split is one purchase). */
-function manualGroups(TX,yms){ var g={}; yms.forEach(function(ym){var m=TX[ym]||{}; for(var id in m){var t=m[id]; if(t.src==='manual'&&t.pm!=='other'&&!t.mt){var k=t.g||id; g[k]=g[k]||{d:t.d,tot:0,parts:[]}; g[k].tot=round2(g[k].tot+t.a); g[k].parts.push([ym,id])}}}); return g }
+function manualGroups(TX,yms){ var g={}; yms.forEach(function(ym){var m=TX[ym]||{}; for(var id in m){var t=m[id]; if(t.src==='manual'&&t.pm!=='other'&&!t.mt){var k=t.g||id; g[k]=g[k]||{d:t.d,tot:0,parts:[],fx:false}; if(t.o) g[k].fx=true; g[k].tot=round2(g[k].tot+t.a); g[k].parts.push([ym,id])}}}); return g }
 function dayDiff(a,b){return Math.abs((Date.parse(a+'T12:00:00Z')-Date.parse(b+'T12:00:00Z'))/864e5)}
 function importRows(S,TX,rows){ var seen={},added=0,dup=0,pays=0,matched=0,months={};
   rows.forEach(function(r){ if(r.pay){pays++;return}
     var k=r.d+'|'+r.n+'|'+r.a; seen[k]=(seen[k]||0)+1; var id='t'+hash(k+'|'+seen[k]),ym=r.d.slice(0,7);
     TX[ym]=TX[ym]||{}; if(TX[ym][id]){dup++;return}
     var gs=manualGroups(TX,[shiftYM(ym,-1),ym,shiftYM(ym,1)]),best=null,bd=99;
-    for(var g in gs){var G=gs[g]; if(G.tot===r.a){var dd=dayDiff(G.d,r.d); if(dd<=5&&dd<bd){bd=dd;best=G}}}
+    for(var g in gs){var G=gs[g]; if(G.fx?Math.abs(G.tot-r.a)<=Math.max(0.5,Math.abs(G.tot)*0.06):G.tot===r.a){var dd=dayDiff(G.d,r.d); if(dd<=5&&dd<bd){bd=dd;best=G}}}
     if(best){ best.parts.forEach(function(p){TX[p[0]][p[1]].mt=true;TX[p[0]][p[1]].bn=r.n;months[p[0]]=1});
       TX[ym][id]={d:r.d,n:r.n,a:r.a,x:true,dupOf:1}; months[ym]=1; matched++; return }
     TX[ym][id]={d:r.d,n:r.n,a:r.a,c:null,s:suggest(S,r.n,r.cc),ok:false}; added++; months[ym]=1 });
   return {added:added,dup:dup,pays:pays,matched:matched,months:Object.keys(months)} }
 /* parts: [{c, a}] with signed amounts. Returns the month it went into. */
 function addManual(TX,e){ var gid='m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),ym=e.d.slice(0,7); TX[ym]=TX[ym]||{};
-  e.parts.forEach(function(p,k){TX[ym][e.parts.length>1?gid+'-'+k:gid]={d:e.d,n:e.n,a:round2(p.a),c:p.c,s:p.c,ok:true,src:'manual',g:gid,pm:e.pm==='other'?'other':'card'}});
+  e.parts.forEach(function(p,k){var t={d:e.d,n:e.n,a:round2(p.a),c:p.c,s:p.c,ok:true,src:'manual',g:gid,pm:e.pm==='other'?'other':'card'}; if(p.o) t.o=p.o; TX[ym][e.parts.length>1?gid+'-'+k:gid]=t});
   return ym }
 function splitCharge(TX,ym,id,parts){ var t=TX[ym][id]; t.x=true; t.sp=true;
   parts.forEach(function(p,k){TX[ym][id+'-s'+k]={d:t.d,n:t.n,a:round2(p.a),c:p.c,s:p.c,ok:true,g:id,src:t.src||'card'}}) }
@@ -333,8 +333,10 @@ try{var m0=localStorage.getItem('bb-mode'); if(m0==='left'||m0==='spent') ui.mod
 var $=function(id){return document.getElementById(id)},app=$('app');
 var MN=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-function usd(n,whole){return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:whole?0:2,maximumFractionDigits:whole?0:2}).format(n)}
-function short(n){return n>=1000?'$'+(Math.round(n/100)/10)+'k':'$'+Math.round(n)}
+function usd(n,whole){var t=new Intl.NumberFormat('en-US',{minimumFractionDigits:whole?0:2,maximumFractionDigits:whole?0:2}).format(Math.abs(n)); return (n<0?'-':'')+'US$'+t}
+function ars(n){return 'ARS '+new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(n)}
+function inCur(n,cur){return cur==='ARS'?ars(n):usd(n)}
+function short(n){return n>=1000?'US$'+(Math.round(n/100)/10)+'k':'US$'+Math.round(n)}
 function ymLabel(ym){return MN[+ym.slice(5,7)-1]+' '+ym.slice(0,4)}
 function dLabel(d){return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}
 function catById(id){for(var i=0;i<S.cats.length;i++) if(S.cats[i].id===id) return S.cats[i]; return null}
@@ -449,39 +451,43 @@ function applyRestore(){ var o=ui.restore&&ui.restore.data; if(!o) return; var o
 function starter(){return '<section class="drop" id="drop"><h2>Add your first charges</h2><ol class="steps"><li>Sign in to Capital One and open your card&rsquo;s transactions.</li><li>Choose Download transactions and pick the CSV format.</li><li>Upload that file here. You confirm each category before anything is counted.</li></ol><div class="row" style="justify-content:center"><button class="btn primary" data-act="upload">Upload charges</button><button class="btn" data-act="add-open">Add a charge by hand</button><button class="btn quiet" data-act="sample">Look around with sample charges</button></div></section>'}
 
 /* manual entry and splitting */
-function blankAdd(keep){return {d:(keep&&keep.d)||TODAY,n:'',a:'',c:'',picked:false,refund:false,pm:(keep&&keep.pm)||'card',split:false,rows:[{c:'',a:''},{c:'',a:''}]}}
+function blankAdd(keep){return {d:(keep&&keep.d)||TODAY,n:'',a:'',c:'',picked:false,refund:false,pm:(keep&&keep.pm)||'card',cur:(keep&&keep.cur)||'USD',fx:(keep&&keep.fx)||(S.fx?String(S.fx):''),split:false,rows:[{c:'',a:''},{c:'',a:''}]}}
+function convText(f){ var a=Number(f.a),r=Number(f.fx); if(!(a>0)) return 'Enter the amount in pesos'; if(!(r>0)) return 'Enter the exchange rate'; return ars(a)+' = '+usd(round2(a/r)) }
 function partsSum(st){return round2(st.rows.reduce(function(s,r){var v=Number(r.a);return s+(isNaN(v)?0:v)},0))}
-function remText(st,total){ if(!(total>0)) return 'Enter the total amount first'; var left=round2(total-partsSum(st)); return left===0?'All '+usd(total)+' assigned':left>0?usd(left)+' left to assign':'Over the total by '+usd(-left) }
-function splitEditor(st,who,total){ var h='<div class="splits">';
+function remText(st,total,cur){ if(!(total>0)) return 'Enter the total amount first'; var left=round2(total-partsSum(st)); return left===0?'All '+inCur(total,cur)+' assigned':left>0?inCur(left,cur)+' left to assign':'Over the total by '+inCur(-left,cur) }
+function splitEditor(st,who,total,cur){ var h='<div class="splits">';
   st.rows.forEach(function(r,i){ h+='<div class="srow"><select id="'+who+'-sc'+i+'" data-ch="sp-c" data-for="'+who+'" data-i="'+i+'" aria-label="Category for part '+(i+1)+'">'+catOptions(r.c,!r.c)+'</select>'
     +'<input type="number" id="'+who+'-sa'+i+'" data-ch="sp-a" data-for="'+who+'" data-i="'+i+'" value="'+esc(r.a)+'" min="0" step="0.01" inputmode="decimal" placeholder="0.00" aria-label="Amount for part '+(i+1)+'">'
     +(st.rows.length>2?'<button class="x" data-act="sp-del" data-for="'+who+'" data-i="'+i+'" aria-label="Remove part '+(i+1)+'">&#10005;</button>':'<span></span>')+'</div>' });
-  return h+'<div class="row spread" style="margin-top:6px"><button class="btn sm quiet" data-act="sp-add" data-for="'+who+'">Add another category</button><span class="small" style="font-weight:800" id="'+who+'-rem">'+remText(st,total)+'</span></div></div>' }
+  return h+'<div class="row spread" style="margin-top:6px"><button class="btn sm quiet" data-act="sp-add" data-for="'+who+'">Add another category</button><span class="small" style="font-weight:800" id="'+who+'-rem">'+remText(st,total,cur)+'</span></div></div>' }
 /* Checks a split; returns parts [{c,a}] (unsigned) or an error message. */
-function readSplit(st,total){ var parts=[];
+function readSplit(st,total,cur){ var parts=[];
   for(var i=0;i<st.rows.length;i++){var r=st.rows[i],v=r.a===''?NaN:Number(r.a); if(!r.c&&r.a==='') continue;
     if(!r.c) return 'Pick a category for part '+(i+1)+'.'; if(isNaN(v)||v<=0) return 'Enter an amount above 0 for part '+(i+1)+'.'; parts.push({c:r.c,a:v})}
   if(parts.length<2) return 'A split needs at least two categories.';
-  var left=round2(total-parts.reduce(function(s,p){return s+p.a},0)); if(left!==0) return left>0?'Assign the remaining '+usd(left)+' to a category.':'The parts add up to '+usd(-left)+' more than the total.';
+  var left=round2(total-parts.reduce(function(s,p){return s+p.a},0)); if(left!==0) return left>0?'Assign the remaining '+inCur(left,cur)+' to a category.':'The parts add up to '+inCur(-left,cur)+' more than the total.';
   return parts }
 function manualList(){ var gs={};
-  for(var ym in TX) for(var id in TX[ym]){var t=TX[ym][id]; if(t.src!=='manual') continue; var k=t.g||id; var G=gs[k]||(gs[k]={g:k,ym:ym,d:t.d,n:t.n,tot:0,cats:[],pm:t.pm,mt:t.mt}); G.tot=round2(G.tot+t.a); var c=catById(t.c); if(c&&G.cats.indexOf(c.name)<0) G.cats.push(c.name)}
+  for(var ym in TX) for(var id in TX[ym]){var t=TX[ym][id]; if(t.src!=='manual') continue; var k=t.g||id; var G=gs[k]||(gs[k]={g:k,ym:ym,d:t.d,n:t.n,tot:0,ars:0,cats:[],pm:t.pm,mt:t.mt}); G.tot=round2(G.tot+t.a); if(t.o) G.ars=round2(G.ars+t.o.amt); var c=catById(t.c); if(c&&G.cats.indexOf(c.name)<0) G.cats.push(c.name)}
   return Object.keys(gs).map(function(k){return gs[k]}).sort(function(a,b){return a.d<b.d?1:a.d>b.d?-1:(a.g<b.g?1:-1)}).slice(0,10) }
 function viewAdd(){ var f=ui.add||(ui.add=blankAdd()),tot=Number(f.a);
   var h='<div class="row"><button class="btn sm quiet" data-act="go" data-view="dash">&#8249; Dashboard</button></div>'
    +'<section class="plate riv"><h2>Add a charge</h2><p class="muted small" style="margin:4px 0 14px">Count a purchase now instead of waiting for your Capital One download, or log one you paid another way. When the download arrives, a card charge with the same amount within a few days is matched to this one, so it isn&rsquo;t counted twice.</p>'
    +'<div class="form"><label class="fld"><span>Where</span><input type="text" id="add-n" data-ch="add" data-k="n" value="'+esc(f.n)+'" placeholder="Blue Door Cafe" maxlength="60" autocomplete="off"></label>'
-   +'<label class="fld"><span>Amount</span><input type="number" id="add-a" data-ch="add" data-k="a" value="'+esc(f.a)+'" placeholder="12.50" min="0" step="0.01" inputmode="decimal"></label>'
+   +'<label class="fld"><span>Amount in '+(f.cur==='ARS'?'pesos':'US dollars')+'</span><input type="number" id="add-a" data-ch="add" data-k="a" value="'+esc(f.a)+'" placeholder="'+(f.cur==='ARS'?'15000':'12.50')+'" min="0" step="0.01" inputmode="decimal"></label>'
+   +'<label class="fld"><span>Currency</span><select id="add-cur" data-ch="add" data-k="cur"><option value="USD"'+(f.cur!=='ARS'?' selected':'')+'>US dollars (US$)</option><option value="ARS"'+(f.cur==='ARS'?' selected':'')+'>Argentine pesos (ARS)</option></select></label>'
+   +(f.cur==='ARS'?'<label class="fld"><span>Pesos per US dollar</span><input type="number" id="add-fx" data-ch="add" data-k="fx" value="'+esc(f.fx)+'" placeholder="1450" min="0" step="0.01" inputmode="decimal"></label>':'')
    +'<label class="fld"><span>Date</span><input type="date" id="add-d" data-ch="add" data-k="d" value="'+esc(f.d)+'"></label>'
    +'<label class="fld"><span>Paid with</span><select id="add-pm" data-ch="add" data-k="pm"><option value="card"'+(f.pm!=='other'?' selected':'')+'>Capital One card</option><option value="other"'+(f.pm==='other'?' selected':'')+'>Cash or another card</option></select></label>'
    +(f.split?'':'<label class="fld"><span>Category</span><select id="add-c" data-ch="add" data-k="c">'+catOptions(f.c,!f.c)+'</select></label>')+'</div>'
-   +(f.split?'<div class="fld" style="margin-top:12px"><span>Split across categories</span>'+splitEditor(f,'add',tot)+'</div>':'')
+   +(f.cur==='ARS'?'<p class="small" style="font-weight:800;margin-top:10px" id="add-conv">'+esc(convText(f))+'</p>':'')
+   +(f.split?'<div class="fld" style="margin-top:12px"><span>Split across categories'+(f.cur==='ARS'?' (in pesos)':'')+'</span>'+splitEditor(f,'add',tot,f.cur)+'</div>':'')
    +'<div class="row spread" style="margin-top:14px"><label class="chk"><input type="checkbox" id="add-r" data-ch="add" data-k="refund"'+(f.refund?' checked':'')+'> This is a refund</label><button class="btn sm quiet" data-act="add-split">'+(f.split?'Use one category':'Split across categories')+'</button></div>'
    +(ui.err?'<p class="err" style="margin-top:10px">'+esc(ui.err)+'</p>':'')
    +'<div class="row" style="margin-top:14px"><button class="btn primary" data-act="add-save">Add charge</button><button class="btn quiet" data-act="go" data-view="dash">Done</button></div></section>';
   var L=manualList();
   h+='<section class="plate"><h3>Added by hand</h3><div class="list" style="margin-top:8px">'+(L.length?'':'<div class="li muted">Nothing added by hand yet.</div>');
-  L.forEach(function(G){ h+='<div class="li"><span class="what"><strong>'+esc(G.n)+'</strong><br><span class="muted small">'+dLabel(G.d)+' &middot; '+esc(G.cats.join(', ')||'No category')+(G.pm==='other'?' &middot; paid another way':'')+'</span></span>'
+  L.forEach(function(G){ h+='<div class="li"><span class="what"><strong>'+esc(G.n)+'</strong><br><span class="muted small">'+dLabel(G.d)+' &middot; '+esc(G.cats.join(', ')||'No category')+(G.pm==='other'?' &middot; paid another way':'')+(G.ars?' &middot; '+ars(G.ars):'')+'</span></span>'
     +(G.mt?'<span class="pill ok">Matched to card</span>':G.pm!=='other'?'<span class="pill">Waiting for card</span>':'')+'<span class="amt">'+usd(G.tot)+'</span><button class="x" data-act="del-manual" data-ym="'+G.ym+'" data-g="'+esc(G.g)+'" aria-label="Delete '+esc(G.n)+'">&#10005;</button></div>' });
   return h+'</div></section>' }
 
@@ -495,7 +501,7 @@ function viewReview(){ var pend=pending(TX),h='<div class="row spread"><button c
     h+='<div class="li"><span class="what"><strong>'+esc(t.n)+'</strong><br><span class="muted small">'+dLabel(t.d)+(t.a<0?' &middot; refund':'')+(t.src==='sample'?' &middot; sample':'')+'</span></span><span class="amt">'+usd(t.a)+'</span>'
       +'<select id="pick-'+esc(p.id)+'" data-ch="pick" data-id="'+esc(p.id)+'" aria-label="Category for '+esc(t.n)+'">'+catOptions(sel,!sel)+'</select>'
       +'<button class="btn sm primary" data-act="confirm" data-id="'+esc(p.id)+'" data-ym="'+p.ym+'">Confirm</button><button class="btn sm quiet" data-act="split-open" data-id="'+esc(p.id)+'" data-ym="'+p.ym+'">Split</button><button class="btn sm quiet" data-act="skip" data-id="'+esc(p.id)+'" data-ym="'+p.ym+'">Not an expense</button>'
-      +(ui.sp&&ui.sp.id===p.id?'<div class="spbox"><p class="small" style="font-weight:800;margin-bottom:6px">Split '+usd(Math.abs(t.a))+' across categories</p>'+splitEditor(ui.sp,'rev',ui.sp.total)
+      +(ui.sp&&ui.sp.id===p.id?'<div class="spbox"><p class="small" style="font-weight:800;margin-bottom:6px">Split '+usd(Math.abs(t.a))+' across categories</p>'+splitEditor(ui.sp,'rev',ui.sp.total,'USD')
         +'<div class="row" style="margin-top:10px"><button class="btn sm primary" data-act="sp-save">Save split</button><button class="btn sm quiet" data-act="sp-cancel">Cancel</button></div></div>':'')+'</div>' });
   return h+'</div></section>' }
 
@@ -516,7 +522,7 @@ function viewCat(){ var c=catById(ui.cat)||S.cats[0]; if(!c) return viewDash(); 
     h+='<section class="plate"><div class="row spread"><h3>'+ymLabel(sm)+'</h3><span class="num">'+usd(sp)+(bd?' of '+usd(bd,true):'')+' '+leftPill(sp,bd)+'</span></div><div class="list" style="margin-top:8px">';
     if(!ids.length) h+='<div class="li muted">No charges in this category that month.</div>';
     ids.forEach(function(id){var t=m[id],man=t.src==='manual',sp=!man&&t.g&&m[t.g]&&m[t.g].sp;
-      h+='<div class="li"><span class="what"><strong>'+esc(t.n)+'</strong><br><span class="muted small">'+dLabel(t.d)+(t.src==='sample'?' &middot; sample':'')+(man?' &middot; added by hand':'')+(t.mt?' &middot; matched to card':'')+(t.pm==='other'?' &middot; paid another way':'')+(sp?' &middot; part of a split':'')+'</span></span><span class="amt">'+usd(t.a)+'</span><select id="mv-'+esc(id)+'" data-ch="move" data-id="'+esc(id)+'" data-ym="'+sm+'" aria-label="Move '+esc(t.n)+' to another category">'+catOptions(t.c)+'</select>'
+      h+='<div class="li"><span class="what"><strong>'+esc(t.n)+'</strong><br><span class="muted small">'+dLabel(t.d)+(t.src==='sample'?' &middot; sample':'')+(man?' &middot; added by hand':'')+(t.mt?' &middot; matched to card':'')+(t.pm==='other'?' &middot; paid another way':'')+(t.o?' &middot; '+ars(t.o.amt):'')+(sp?' &middot; part of a split':'')+'</span></span><span class="amt">'+usd(t.a)+'</span><select id="mv-'+esc(id)+'" data-ch="move" data-id="'+esc(id)+'" data-ym="'+sm+'" aria-label="Move '+esc(t.n)+' to another category">'+catOptions(t.c)+'</select>'
         +(man?'<button class="x" data-act="del-manual" data-ym="'+sm+'" data-g="'+esc(t.g||id)+'" aria-label="Delete '+esc(t.n)+'">&#10005;</button>':'')
         +(sp?'<button class="btn sm quiet" data-act="unsplit" data-ym="'+sm+'" data-g="'+esc(t.g)+'">Undo split</button>':'')+'</div>'});
     h+='</div></section>' }
@@ -589,16 +595,20 @@ document.addEventListener('click',function(ev){ var b=ev.target.closest('[data-a
   if(a==='add-save'){ var f=ui.add,nm=f.n.trim(),tot=f.a===''?NaN:round2(Number(f.a)),sign=f.refund?-1:1,parts;
     if(!nm){ui.err='Enter where the charge was made.';return render()}
     if(isNaN(tot)||tot<=0){ui.err='Enter an amount above 0.';return render()}
+    var rate=f.cur==='ARS'?Number(f.fx):1; if(f.cur==='ARS'&&!(rate>0)){ui.err='Enter how many pesos one US dollar costs.';return render()}
     if(!/^\d{4}-\d{2}-\d{2}$/.test(f.d)){ui.err='Pick the date of the charge.';return render()}
-    if(f.split){ parts=readSplit(f,tot); if(typeof parts==='string'){ui.err=parts;return render()} }
+    if(f.split){ parts=readSplit(f,tot,f.cur); if(typeof parts==='string'){ui.err=parts;return render()} }
     else { if(!f.c||!catById(f.c)){ui.err='Pick a category.';return render()} parts=[{c:f.c,a:tot}] }
-    var ymA=addManual(TX,{d:f.d,n:nm,pm:f.pm,parts:parts.map(function(p){return {c:p.c,a:sign*p.a}})});
+    var totUSD=round2(tot/rate),acc=0,conv=parts.map(function(p,i){ var u=i===parts.length-1?round2(totUSD-acc):round2(p.a/rate); acc=round2(acc+u);
+      var o={c:p.c,a:sign*u}; if(f.cur==='ARS') o.o={cur:'ARS',amt:sign*p.a,rate:rate}; return o });
+    if(f.cur==='ARS'){S.fx=rate; saveSettings()}
+    var ymA=addManual(TX,{d:f.d,n:nm,pm:f.pm,parts:conv});
     if(parts.length===1){S.rules[merchantKey(nm)]=parts[0].c; saveSettings()} saveMonth(ymA);
     var where=parts.length===1?catById(parts[0].c).name:parts.length+' categories';
-    ui.err=''; ui.add=blankAdd(f); render(); toast((f.refund?'Refund of ':'')+usd(tot)+' added to '+where); var nf2=$('add-n'); if(nf2&&window.innerWidth>640) nf2.focus(); return }
+    ui.err=''; ui.add=blankAdd(f); render(); toast((f.refund?'Refund of ':'')+usd(totUSD)+(f.cur==='ARS'?' ('+ars(tot)+')':'')+' added to '+where); var nf2=$('add-n'); if(nf2&&window.innerWidth>640) nf2.focus(); return }
   if(a==='split-open'){ var t0=findTx(d.ym,d.id); if(!t0) return; var sel0=$('pick-'+d.id); ui.sp={id:d.id,ym:d.ym,total:Math.abs(t0.a),neg:t0.a<0,rows:[{c:(sel0&&sel0.value)||t0.s||'',a:''},{c:'',a:''}]}; ui.err=''; render(); return }
   if(a==='sp-cancel'){ ui.sp=null; ui.err=''; render(); return }
-  if(a==='sp-save'){ var sp=ui.sp; if(!sp) return; var pr=readSplit(sp,sp.total); if(typeof pr==='string'){ui.err=pr;return render()}
+  if(a==='sp-save'){ var sp=ui.sp; if(!sp) return; var pr=readSplit(sp,sp.total,'USD'); if(typeof pr==='string'){ui.err=pr;return render()}
     splitCharge(TX,sp.ym,sp.id,pr.map(function(p){return {c:p.c,a:sp.neg?-p.a:p.a}})); delete ui.picks[sp.id]; saveMonth(sp.ym); ui.sp=null; ui.err=''; render(); toast('Split into '+pr.length+' categories'); return }
   if(a==='unsplit'){ unsplit(TX,d.ym,d.g); saveMonth(d.ym); render(); toast('Split undone. The charge is back in Sort.'); return }
   if(a==='del-manual'){ var gone=deleteGroup(TX,d.ym,d.g),ymD=d.ym,first=gone[Object.keys(gone)[0]]; saveMonth(ymD); render();
@@ -627,10 +637,12 @@ document.addEventListener('click',function(ev){ var b=ev.target.closest('[data-a
 function setAdd(e){ var f=ui.add; if(!f) return; var k=e.dataset.k,v=e.type==='checkbox'?e.checked:e.value; f[k]=v;
   if(k==='c') f.picked=true;
   if(k==='n'&&!f.picked&&!f.split){ var s=suggest(S,v,''),sel=$('add-c'); if(s&&sel){ sel.value=s; f.c=s } }
-  if(k==='a'&&f.split){ var r=$('add-rem'); if(r) r.textContent=remText(f,Number(f.a)) } }
+  if(k==='a'&&f.split){ var r=$('add-rem'); if(r) r.textContent=remText(f,Number(f.a),f.cur) }
+  if(k==='a'||k==='fx'){ var cv=$('add-conv'); if(cv) cv.textContent=convText(f) }
+  if(k==='cur'&&e.tagName==='SELECT'&&e._last!==e.value){ e._last=e.value; render() } }
 function setSplit(e){ var who=e.dataset.for,st=who==='add'?ui.add:ui.sp; if(!st) return; var r=st.rows[+e.dataset.i]; if(!r) return;
   if(e.dataset.ch==='sp-c') r.c=e.value; else r.a=e.value;
-  var el=$(who+'-rem'); if(el) el.textContent=remText(st,who==='add'?Number(ui.add.a):st.total) }
+  var el=$(who+'-rem'); if(el) el.textContent=remText(st,who==='add'?Number(ui.add.a):st.total,who==='add'?ui.add.cur:'USD') }
 document.addEventListener('input',function(ev){ var e=ev.target,c=e.dataset&&e.dataset.ch;
   if(c==='add'){setAdd(e);return} if(c==='sp-c'||c==='sp-a'){setSplit(e);return}
   if(!ui.draft) return;
